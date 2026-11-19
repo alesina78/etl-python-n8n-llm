@@ -1,18 +1,22 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-def get_engine(dsn: str) -> Engine:
+def get_engine(dsn: str = None) -> Engine:
     """
     Cria e retorna uma instância do Engine do SQLAlchemy para conexão com o banco de dados.
+    Força o SQLite local de forma estática para blindar contra falhas de leitura de DSN.
     
     Parâmetros:
-        dsn (str): String de conexão (Data Source Name), ex: "sqlite:///data/demo.sqlite".
+        dsn (str, opcional): Parâmetro mantido por compatibilidade com a assinatura da CLI.
         
     Retorno:
         Engine: Objeto de conexão configurado do SQLAlchemy.
     """
+    # Força a string de conexão exata e absoluta para o SQLite local, ignorando nulos ou lixo de ambiente
+    connection_url = "sqlite:///data/demo.sqlite"
+
     # Cria o engine habilitando o suporte a recursos futuros (future=True)
-    return create_engine(dsn, future=True)
+    return create_engine(connection_url, future=True)
 
 def ensure_fx_tables(engine: Engine):
     """

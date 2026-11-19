@@ -1,10 +1,11 @@
 import json
 import math
+import time
 from typing import Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from openai import OpenAI
-from src.config import OPENAI_API_KEY
+from src.config import OPENAI_API_KEY, OPENAI_MODEL, OLLAMA_BASE_URL
 
 # Prompt de Sistema (System Prompt) que define o comportamento, 
 # papel e regras restritivas para o modelo de Inteligência Artificial.
@@ -37,10 +38,10 @@ def _call_llm(client: OpenAI, base: str, symbol: str, ref_date: str,
               rate: float, prev_date: Optional[str], prev_rate: Optional[float],
               pct_change: Optional[float]) -> dict:
     """
-    Envia os dados do par de moedas para a API da OpenAI (GPT-4o-mini) 
+    Envia os dados do par de moedas para o Ollama local (Llama 3) 
     e retorna um dicionário estruturado com o resumo e a análise de tendência.
     """
-    # Prepara o payload de dados que o modelo irá analisar
+    # Prepara o payload de dados original que o modelo irá analisar
     user = {
         "pair": f"{base}->{symbol}",
         "ref_date": ref_date,
@@ -50,23 +51,29 @@ def _call_llm(client: OpenAI, base: str, symbol: str, ref_date: str,
         "pct_change": pct_change
     }
     
-    # Chamada à API de Chat Completions da OpenAI
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": SYS},
-            {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
-        ],
-        temperature=0.0,  # Temperatura zero garante respostas determinísticas e precisas
-    )
-    
-    raw = resp.choices[0].message.content
-    
-    # Tenta converter a resposta da IA de string JSON para dicionário Python
+    # Chamada à API compatível com OpenAI apontando para o Ollama local com proteções de travamento
     try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,  # Utiliza "llama3" configurado no config.py
+            messages=[
+                {"role": "system", "content": SYS},
+                {"role": "user", "content": json.dumps(user, ensure_ascii=False)}
+            ],
+            temperature=0.0,  # Temperatura zero garante respostas determinísticas e precisas
+            max_tokens=250,   # Evita loops longos de geração
+        )
+        raw = resp.choices[0].message.content.strip()
+        
+        # Limpeza defensiva caso o modelo coloque blocos de markdown acidentalmente
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        
         data = json.loads(raw)
-    except Exception:
-        # Fallback de segurança caso a IA retorne um formato inválido
+    except Exception as e:
+        # Fallback de segurança robusto caso a IA falhe ou dê timeout em algum par
         trend = "estável"
         if pct_change is not None:
             if pct_change > 0.0005:
@@ -75,8 +82,8 @@ def _call_llm(client: OpenAI, base: str, symbol: str, ref_date: str,
                 trend = "queda"
         data = {
             "short_text": f"{base}→{symbol} { _fmt_rate(rate) } ({trend})",
-            "analysis": "Resumo gerado sem JSON estruturado pelo modelo.",
-            "ia_notes": f"parse_error: {raw[:180]}"
+            "analysis": f"Variação de {_fmt_pct(pct_change)} registrada no período.",
+            "ia_notes": f"fallback_active: {str(e)[:100]}"
         }
         
     # Garante que todas as chaves obrigatórias estejam presentes no dicionário
@@ -101,13 +108,15 @@ def _prev_point(engine: Engine, base: str, symbol: str, ref_date: str) -> Tuple[
 def enrich_latest_date(engine: Engine, limit_pairs: int = 200) -> int:
     """
     Orquestra a Camada Gold: encontra a data mais recente no fx_silver, 
-    calcula a variação em relação ao dia anterior, consulta a IA para gerar 
+    calcula a variação em relação ao dia anterior, consulta o Ollama local para gerar 
     insights e salva/atualiza (UPSERT) os resultados consolidados na tabela fx_gold.
     """
-    # Valida se a chave da OpenAI foi configurada no ambiente
-    if not OPENAI_API_KEY:
-        raise RuntimeError("Defina OPENAI_API_KEY no .env para rodar o GOLD de FX.")
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    # Instancia o cliente apontando para o Ollama local com timeout generoso de 120s
+    client = OpenAI(
+        api_key=OPENAI_API_KEY,    # "ollama"
+        base_url=OLLAMA_BASE_URL,  # "http://localhost:11434/v1"
+        timeout=120.0              # Margem segura para modelos locais na primeira inferência
+    )
 
     with engine.begin() as conn:
         # Identifica a data mais recente armazenada na camada Silver
@@ -139,7 +148,7 @@ def enrich_latest_date(engine: Engine, limit_pairs: int = 200) -> int:
             if prev_rate and prev_rate != 0:
                 pct_change = (rate - prev_rate) / prev_rate
 
-            # Chama o serviço de IA para obter a análise textual do par
+            # Chama o serviço de IA local para obter a análise textual do par
             gen = _call_llm(client, base, symbol, latest, rate, prev_date, prev_rate, pct_change)
 
             # Insere os dados enriquecidos na tabela fx_gold (com UPSERT para evitar duplicatas)
@@ -171,5 +180,8 @@ def enrich_latest_date(engine: Engine, limit_pairs: int = 200) -> int:
                 "ia_notes": gen["ia_notes"]
             })
             inserted += 1
+            
+            # Pausa breve de 0.5s para o motor do Ollama respirar entre as requisições
+            time.sleep(0.5)
 
     return inserted

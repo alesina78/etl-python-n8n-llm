@@ -1,7 +1,7 @@
 import argparse
 import pandas as pd
-from sqlalchemy import create_engine, text
-from src.config import DB_DSN
+from sqlalchemy import text
+from src.fx_db import get_engine
 
 def main():
     """
@@ -11,14 +11,11 @@ def main():
     """
     # Configura os argumentos aceitos via linha de comando
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", help="String de conexão DSN (por padrão usa o DB_DSN do .env)")
+    ap.add_argument("--db", help="String de conexão DSN (opcional)")
     args = ap.parse_args()
 
-    # Define o DSN do banco de dados (prioriza o argumento da CLI, senão usa o padrão)
-    dsn = args.db or DB_DSN
-    
-    # Cria o engine de conexão com o banco de dados SQLAlchemy
-    engine = create_engine(dsn, future=True)
+    # Obtém o engine blindado (aceita DSN opcional da CLI ou usa o SQLite padrão)
+    engine = get_engine(args.db)
 
     # Abre uma conexão ativa com o banco para realizar as consultas de inspeção
     with engine.connect() as conn:

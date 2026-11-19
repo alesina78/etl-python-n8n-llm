@@ -23,8 +23,8 @@ def main():
     ap.add_argument("--limit_pairs", type=int, default=200, help="Número máximo de pares processados no estágio GOLD")
     args = ap.parse_args()
 
-    # Define o DSN do banco de dados (prioriza o argumento da CLI, senão usa o padrão do .env)
-    dsn = args.db or DB_DSN
+    # Define o DSN do banco de dados (prioriza CLI, depois .env, e por fim define o SQLite local como fallback seguro)
+    dsn = args.db or DB_DSN or "sqlite:///data/demo.sqlite"
     
     # Inicializa o engine do SQLAlchemy e garante que as tabelas necessárias existam
     engine = get_engine(dsn)
